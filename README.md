@@ -20,3 +20,16 @@ model = HORST(
 input = torch.randn(1, 8, 256, 56, 56) # (Batch, Timesteps, Channels, Height, Width)
 out = model(input)  # (1, 8, 512, 56, 56)
 ```
+
+## Citations
+
+```bibtex
+@misc{tai2021higher,
+      title={Higher Order Recurrent Space-Time Transformer}, 
+      author={Tsung-Ming Tai and Giuseppe Fiameni and Cheng-Kuang Lee and Oswald Lanz},
+      year={2021},
+      eprint={2104.08665},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+```
