@@ -76,7 +76,7 @@ class STAtt(nn.Module):
         self.s_prob = s_prob
         v = v * s_prob
         
-        # Step 3 - Temporal attention
+        # Temporal attention
         q = (q * q_sa)
         k = (k * k_sa)
         q = q.reshape(*q.shape[:2], -1) # l, b, chw
@@ -109,9 +109,7 @@ class ShortcutSqueezeAndExcitation(nn.Module):
 
 class HORSTCell(nn.Module):
     def __init__(self,
-        input_channels, hidden_channels,
-        order = 8, steps = 8, ranks = 8,
-        kernel_size = 3, bias = True, stride = 1, frame_dropout=0):
+        input_channels, hidden_channels, steps = 8, kernel_size = 3, bias = True, stride = 1):
 
         super().__init__()
 
@@ -121,13 +119,9 @@ class HORSTCell(nn.Module):
         self.stride = stride
         
         self.steps = steps
-        self.order = order
-        self.ranks = ranks
         
         if stride > 1:
             self.reducer = nn.MaxPool2d(2)
-            
-        self.frame_dropout = nn.Dropout(frame_dropout)
         
         self.encoder = nn.Sequential(
             nn.Conv2d(input_channels, hidden_channels, 3, 1, 1, bias=False),
@@ -168,7 +162,7 @@ class HORSTCell(nn.Module):
         return new_state
 
         
-    def forward(self, inputs, first_step = False, checkpointing = False, mask = None):
+    def forward(self, inputs, first_step = False, mask = None):
         if first_step: self.initialize(inputs) # intialize the states at the first step
             
         if self.stride > 1:
@@ -214,94 +208,35 @@ class HORSTCell(nn.Module):
 
 class HORST(nn.Module):
     def __init__(self,
-        # input to the model
         input_channels,
-        # architecture of the model
         layers_per_block, 
         hidden_channels,
         stride = None,
-        skip_stride = None,
-        # parameters of convolutional tensor-train layers
-        cell_params = {'order': 8, 'steps': 8, 'ranks': 8}, 
-        # parameters of convolutional operation
-        kernel_size = 3, bias = True,
-        # feed input to every groups
-        input_shortcut = True,
-        # output function and output format
-        output_sigmoid = False,
-        frame_dropout = 0):
-        """
-        Initialization of a HORST network.
+        cell_params = {'steps': 8}, 
+        kernel_size = 3, bias = True):
         
-        Arguments:
-        ----------
-        (Hyper-parameters of input interface)
-        input_channels: int 
-            The number of channels for input video.
-            Note: 3 for colored video, 1 for gray video. 
-
-        (Hyper-parameters of model architecture)
-        layers_per_block: list of ints
-            Number of Conv-LSTM layers in each block. 
-        hidden_channels: list of ints
-            Number of output channels.
-        Note: The length of hidden_channels (or layers_per_block) is equal to number of blocks.
-
-        skip_stride: int
-            The stride (in term of blocks) of the skip connections
-            default: None, i.e. no skip connection
-        
-        cell_params: dictionary
-
-            order: int
-                The recurrent order of convolutional tensor-train cells.
-                default: 3
-            steps: int
-                The number of previous steps used in the recurrent cells.
-                default: 5
-            rank: int
-                The tensor-train rank of convolutional tensor-train cells.
-                default: 16
-        ]
-        
-        (Parameters of convolutional operations)
-        kernel_size: int or (int, int)
-            Size of the (squared) convolutional kernel.
-            default: 3
-        bias: bool 
-            Whether to add bias in the convolutional operation.
-            default: True
-
-        (Parameters of the output function)
-        output_sigmoid: bool
-            Whether to apply sigmoid function after the output layer.
-            default: False
-        """
         super().__init__()
 
         ## Hyperparameters
         self.layers_per_block = layers_per_block
         self.hidden_channels  = hidden_channels
         if stride is None:
-            self.stride = [1] * len(self.hidden_channels)
+            stride = [1] * len(self.hidden_channels)
         else:
-            self.stride = stride
+            stride = stride
 
         self.num_blocks = len(layers_per_block)
         assert self.num_blocks == len(hidden_channels), "Invalid number of blocks."
 
-        self.skip_stride = (self.num_blocks + 1) if skip_stride is None else skip_stride
 
-        self.input_shortcut = input_shortcut
-        
-        self.output_sigmoid = output_sigmoid
-
-        ## Module type of convolutional LSTM layers
-
-        Cell = lambda in_channels, out_channels, stride, frame_dropout: HORSTCell(
-                input_channels = in_channels, hidden_channels = out_channels,
-                order = cell_params["order"], steps = cell_params["steps"], ranks = cell_params["ranks"],
-                kernel_size = kernel_size, bias = bias, stride = stride, frame_dropout = frame_dropout)
+        Cell = lambda in_channels, out_channels, stride: HORSTCell(
+                                                                   input_channels = in_channels, 
+                                                                   hidden_channels = out_channels,
+                                                                   steps = cell_params["steps"],
+                                                                   kernel_size = kernel_size, 
+                                                                   bias = bias, 
+                                                                   stride = stride
+                                                                  )
 
         ## Construction of convolutional tensor-train LSTM network
 
@@ -319,61 +254,17 @@ class HORST(nn.Module):
                     if self.input_shortcut:
                         channels += input_channels
                         
-                    if b > self.skip_stride:
-                        channels += hidden_channels[b-1-self.skip_stride] 
-
                 lid = "b{}l{}".format(b, l) # layer ID
-                self.layers[lid] = Cell(channels, hidden_channels[b], self.stride[b], frame_dropout)
+                self.layers[lid] = Cell(channels, hidden_channels[b], stride[b])
             
 
-    def forward(self, inputs, length = None, input_frames = None, future_frames=0, output_frames = None, 
-        teacher_forcing = False, scheduled_sampling_ratio = 0, checkpointing = False):
-        """
-        Computation of Convolutional LSTM network.
-        
-        Arguments:
-        ----------
-        inputs: a 5-th order tensor of size [batch_size, input_frames, input_channels, height, width] 
-            Input tensor (video) to the deep Conv-LSTM network. 
-        
-        input_frames: int
-            The number of input frames to the model.
-        future_frames: int
-            The number of future frames predicted by the model.
-        output_frames: int
-            The number of output frames returned by the model.
-
-        teacher_forcing: bool
-            Whether the model is trained in teacher_forcing mode.
-            Note 1: In test mode, teacher_forcing should be set as False.
-            Note 2: If teacher_forcing mode is on,  # of frames in inputs = total_steps
-                    If teacher_forcing mode is off, # of frames in inputs = input_frames
-        scheduled_sampling_ratio: float between [0, 1]
-            The ratio of ground-truth frames used in teacher_forcing mode.
-            default: 0 (i.e. no teacher forcing effectively)
-
-        Returns:
-        --------
-        outputs: a 5-th order tensor of size [batch_size, output_frames, hidden_channels, height, width]
-            Output frames of the convolutional-LSTM module.
-        """
-        
+    def forward(self, inputs, length = None, input_frames = None, future_frames=0, output_frames = None):
         if input_frames is None:
             input_frames = inputs.size(1)
         
         if output_frames is None:
             output_frames = input_frames
 
-        # compute the teacher forcing mask 
-        if teacher_forcing and scheduled_sampling_ratio > 1e-6:
-            # generate the teacher_forcing mask (4-th order)
-            teacher_forcing_mask = torch.bernoulli(scheduled_sampling_ratio * 
-                torch.ones(inputs.size(0), future_frames - 1, 1, 1, 1, device = inputs.device))
-        else: # if not teacher_forcing or scheduled_sampling_ratio < 1e-6:
-            teacher_forcing = False
-
-        # the number of time steps in the computational graph
-#         total_steps = input_frames + future_frames - 1
         total_steps = input_frames + future_frames
         outputs = [None] * total_steps
 
@@ -381,12 +272,7 @@ class HORST(nn.Module):
             # input_: 4-th order tensor of size [batch_size, input_channels, height, width]
             if t < input_frames: 
                 input_ = inputs[:, t]
-            elif not teacher_forcing:
-                input_ = outputs[t-1]
-            else: # if t >= input_frames and teacher_forcing:
-                mask = teacher_forcing_mask[:, t - input_frames]
-                input_ = inputs[:, t] * mask + outputs[t-1] * (1 - mask)
-                
+            
             # length-aware
             if length is None:
                 length = torch.stack([torch.LongTensor([total_steps]) for _ in range(input_.size(0))]).to(input_.device).squeeze(-1)
@@ -401,28 +287,13 @@ class HORST(nn.Module):
             for b in range(self.num_blocks):
                 for l in range(self.layers_per_block[b]):
                     lid = "b{}l{}".format(b, l) # layer ID
-                    input_, ht, st = self.layers[lid](input_, first_step = (t == 0), checkpointing = checkpointing, mask = length_mask)
+                    input_, ht, st = self.layers[lid](input_, first_step = (t == 0), mask = length_mask)
                     
-#                 output_.append(torch.stack([input_, ht, st], dim=-1))
                 output_.append(input_)
-                
                 queue.append(input_)
                 
-                if self.input_shortcut:
-                    input_ = torch.cat([input_, backup_input], dim = 1) # Shortcut for each group
-                    
-                if b >= self.skip_stride:
-                    input_ = torch.cat([input_, queue.pop(0)], dim = 1) # skip connection
-
-            # map the hidden states to predictive frames (with optional sigmoid function)
-            if self.input_shortcut:
-                outputs[t] = torch.cat(output_, dim=1)
-            else:
-                outputs[t] = output_[-1]
+            outputs[t] = output_[-1]
                                
-            if self.output_sigmoid:
-                outputs[t] = torch.sigmoid(outputs[t])
-                
             if length is not None:
                 out = torch.zeros(original_batch_size, *outputs[t].shape[1:], device=outputs[t].device, dtype=outputs[t].dtype)
                 out[length_mask] = outputs[t]
@@ -431,7 +302,6 @@ class HORST(nn.Module):
         # return the last output_frames of the outputs
         outputs = outputs[-output_frames:]
         
-
         # 5-th order tensor of size [batch_size, output_frames, channels, height, width]
         outputs = torch.stack(outputs, dim = 1)
 
