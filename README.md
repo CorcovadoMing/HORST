@@ -1,4 +1,6 @@
-# HORST
+# Higher Order Recurrent Space-Time Transformer (HORST)
+
+This is the official PyTorch implementation of [Higher Order Recurrent Space-Time Transformer](https://arxiv.org/abs/2104.08665). The complete training codes to reproduce the results will be released soon.
 
 ![](overview.jpg)
 
