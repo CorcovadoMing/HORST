@@ -62,7 +62,6 @@ class STAtt(nn.Module):
             nn.Conv2d(2*channels, channels, 3, 1, 1, bias=False),
             nn.GroupNorm(1, channels)
         )
-        self.v_sa = SpatialFilter()
         
         self.v_post_f = nn.Sequential(
             nn.Conv2d(channels, channels, 1, bias=False),
@@ -81,12 +80,6 @@ class STAtt(nn.Module):
         # Pre-transform
         q = self.q_pre_f(q.reshape(q.size(0)*q.size(1), *q.shape[2:])).reshape(*q.shape)
         k = self.k_pre_f(k.reshape(k.size(0)*k.size(1), *k.shape[2:])).reshape(k.size(0), k.size(1), k.size(2) // 2, *k.shape[3:])
-        with torch.no_grad():
-            index = torch.arange(v.size(0), device=v.device)
-            pos_emb = self.pos_emb(index).contiguous()
-            pos_emb = pos_emb[:, None, :, None, None]
-            pos_emb = pos_emb.expand_as(v)
-        v = v + pos_emb
         v = self.v_pre_f(v.reshape(v.size(0)*v.size(1), *v.shape[2:])).reshape(v.size(0), v.size(1), v.size(2) // 2, *v.shape[3:])
         
         q_sa = self.q_sa(q.reshape(q.size(0)*q.size(1), *q.shape[2:])).reshape(q.size(0), q.size(1), 1, *q.shape[3:])
