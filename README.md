@@ -2,8 +2,12 @@
 
 This is the official PyTorch implementation of [Higher Order Recurrent Space-Time Transformer](https://arxiv.org/abs/2104.08665). The complete training codes to reproduce the results will be released soon.
 
+
+## HORST Overview
 ![](horst_overview.png)
 
+## Spatial-Temporal Attention
+Left: Proposed Spatial-Temporal Attention. (Temporal branch is in grey area, and spatial branch is in yellow); Right: Attention in (Vaswani et al. 2017).
 ![](statt_vs_sa.png)
 
 ---
