@@ -1,110 +1,74 @@
-# The MIT License (MIT)
-
-# Copyright (c) 2021 NVIDIA CORPORATION.
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of
-# this software and associated documentation files (the "Software"), to deal in
-# the Software without restriction, including without limitation the rights to
-# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-# the Software, and to permit persons to whom the Software is furnished to do so,
-# subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-# FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-# IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
-import opt_einsum as oe
-
 
 
 class SpatialFilter(nn.Module):
     def __init__(self):
         super().__init__()
-        self.f = nn.Sequential(
-            nn.Conv2d(2, 1, 3, 1, 1),
-            nn.Sigmoid()
-        )
+        self.f = nn.Sequential(nn.Conv2d(2, 1, 3, 1, 1), nn.Sigmoid())
     
     def forward(self, x):
-        # x: bchw
+        # x: (b, c, h, w)
+        # Implementation of Eq. (4) 
         avg_pool = x.mean(1, keepdim=True)
         max_pool = x.max(1, keepdim=True)[0]
         return self.f(torch.cat([avg_pool, max_pool], dim=1))
 
     
-    
-class STAtt(nn.Module):
+class STATT(nn.Module):
     def __init__(self, channels):
         super().__init__()
+        self.sf_Q = SpatialFilter()
+        self.sf_K = SpatialFilter()
         
         self.q_pre_f = nn.Sequential(
             nn.Conv2d(channels, channels, 3, 1, 1, bias=False),
             nn.GroupNorm(1, channels)
         )
-        self.q_sa = SpatialFilter()
-        
         self.k_pre_f = nn.Sequential(
             nn.Conv2d(2*channels, channels, 3, 1, 1, bias=False),
             nn.GroupNorm(1, channels)
         )
-        self.k_sa = SpatialFilter()
-        
         self.v_pre_f = nn.Sequential(
             nn.Conv2d(2*channels, channels, 3, 1, 1, bias=False),
             nn.GroupNorm(1, channels)
-        )
-        
+        )        
         self.v_post_f = nn.Sequential(
             nn.Conv2d(channels, channels, 1, bias=False),
             nn.GroupNorm(1, channels),
             nn.SiLU(inplace=True),
         )
-        
-        self.pos_emb = nn.Embedding(8, 2*channels, max_norm=1, scale_grad_by_freq=True)
-        
     
-    def forward(self, q, k, v):
-        # q: (l, b, c, h, w)
-        # k: (s, b, c, h, w)
+    def forward(self, Q, K, V):
+        # q: (1, b, c, h, w)
+        # k: (s, b, c, h, w) 
         # v: (s, b, c, h, w)
-    
-        # Pre-transform
-        q = self.q_pre_f(q.reshape(q.size(0)*q.size(1), *q.shape[2:])).reshape(*q.shape)
-        k = self.k_pre_f(k.reshape(k.size(0)*k.size(1), *k.shape[2:])).reshape(k.size(0), k.size(1), k.size(2) // 2, *k.shape[3:])
-        v = self.v_pre_f(v.reshape(v.size(0)*v.size(1), *v.shape[2:])).reshape(v.size(0), v.size(1), v.size(2) // 2, *v.shape[3:])
         
-        q_sa = self.q_sa(q.reshape(q.size(0)*q.size(1), *q.shape[2:])).reshape(q.size(0), q.size(1), 1, *q.shape[3:])
-        k_sa = self.k_sa(k.reshape(k.size(0)*k.size(1), *k.shape[2:])).reshape(k.size(0), k.size(1), 1, *k.shape[3:])
-        
-        q_fg = (k_sa * q).mean([-1, -2]) # s, b, c
-        s_prob = torch.sigmoid(oe.contract('sbc,sbcd->sbd', q_fg, k.reshape(*k.shape[:3], -1))).reshape(v.size(0), v.size(1), 1, v.size(-2), v.size(-1)).expand_as(v)
-        self.s_prob = s_prob
-        v = v * s_prob
-        
-        # Temporal attention
-        q = (q * q_sa)
-        k = (k * k_sa)
-        q = q.reshape(*q.shape[:2], -1) # l, b, chw
-        k = k.reshape(*k.shape[:2], -1) # s, b, chw
-        t_prob = oe.contract('lbd,sbd->lsb', q, k)
-        t_prob = F.softmax(t_prob * (q.size(-1) ** -0.5), dim=1)
-        self.t_prob = t_prob
-        v = oe.contract('lsb,sbchw->bchw', t_prob, v)
-        
-        # Post-transform to V
-        v = self.v_post_f(v)
-        return v
-    
+        Q = self.q_pre_f(Q.reshape(Q.size(0)*Q.size(1), *Q.shape[2:])).reshape(*Q.shape)
+        K = self.k_pre_f(K.reshape(K.size(0)*K.size(1), *K.shape[2:])).reshape(K.size(0), K.size(1), K.size(2) // 2, *K.shape[3:])
+        V = self.v_pre_f(V.reshape(V.size(0)*V.size(1), *V.shape[2:])).reshape(V.size(0), V.size(1), V.size(2) // 2, *V.shape[3:])
 
+        f_Q = self.sf_Q(Q.reshape(Q.size(0)*Q.size(1), *Q.shape[2:])) \
+                  .reshape(*Q.shape[:2], 1, *Q.shape[3:])
+        f_K = self.sf_K(K.reshape(K.size(0)*K.size(1), *K.shape[2:])) \
+                  .reshape(*K.shape[:2], 1, *K.shape[3:])
+        
+        # Spatial branch - Implementation of Eq. (5)
+        f_KQ = (f_K * Q).mean([-1, -2]) # \hat{Q} in Eq. (5)
+        S = torch.sigmoid(torch.einsum('sbc,sbcd->sbd', f_KQ, K.reshape(*K.shape[:3], -1)))
+        S = S.reshape(*V.shape[:2], 1, *V.shape[-2:]).expand_as(V)
+        V = V * S # Eq. (7) - spatial part
+        
+        # Temporal branch - Implementation of Eq. (6)
+        Q = (Q * f_Q).reshape(*Q.shape[:2], -1) 
+        K = (K * f_K).reshape(*K.shape[:2], -1) 
+        T = torch.einsum('lbd,sbd->lsb', Q, K)
+        T = F.softmax(T * (Q.size(-1) ** -0.5), dim=1)
+        V = torch.einsum('lsb,sbchw->bchw', T, V) # Eq. (7) - temporal part
+        return V
+    
+    
 class ShortcutSqueezeAndExcitation(nn.Module):
     def __init__(self, in_dim, reduction_ratio=4, **kwargs):
         super().__init__()
@@ -150,7 +114,7 @@ class HORSTCell(nn.Module):
             ShortcutSqueezeAndExcitation(hidden_channels)
         )
         
-        self.mha = STAtt(hidden_channels)
+        self.mha = STATT(hidden_channels)
     
         self.agg_f = nn.Sequential(
             nn.Conv3d(hidden_channels, hidden_channels, (1,1,2), padding=0, bias=False),
