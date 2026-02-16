@@ -1,6 +1,6 @@
 # Higher Order Recurrent Space-Time Transformer (HORST)
 
-This is the official PyTorch implementation of [Higher Order Recurrent Space-Time Transformer](https://arxiv.org/abs/2104.08665). The complete training codes to reproduce the results will be released soon.
+This is the official PyTorch implementation of [Higher Order Recurrent Space-Time Transformer](https://arxiv.org/abs/2104.08665) and [Higher-Order Recurrent Network with Space-Time Attention for Video Early Action Recognition]([https://arxiv.org/abs/2104.08665](https://ieeexplore.ieee.org/abstract/document/9897974)).
 
 
 ## HORST Overview
@@ -31,6 +31,19 @@ out = model(input)  # (1, 8, 512, 56, 56)
 
 ## Citations
 
+
+```bibtex
+@inproceedings{tai2022higher,
+  title={Higher-order recurrent network with space-time attention for video early action recognition},
+  author={Tai, Tsung-Ming and Fiameni, Giuseppe and Lee, Cheng-Kuang and Lanz, Oswald},
+  booktitle={2022 IEEE International Conference on Image Processing (ICIP)},
+  pages={1631--1635},
+  year={2022},
+  organization={IEEE}
+}
+```
+
+
 ```bibtex
 @misc{tai2021higher,
       title={Higher Order Recurrent Space-Time Transformer}, 
@@ -41,3 +54,6 @@ out = model(input)  # (1, 8, 512, 56, 56)
       primaryClass={cs.CV}
 }
 ```
+
+
+
